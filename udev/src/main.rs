@@ -1,4 +1,4 @@
-use std::ffi::OsStr;
+use std::{ffi::OsStr, path::PathBuf};
 
 use udev::{Event, EventType, MonitorBuilder};
 
@@ -8,7 +8,8 @@ fn main() {
     // udev_with_drm_kms();
     // monitor_usb_wait();
     // query_drm_output_devices();
-    listen_for_hotplugged_monitors();
+    // listen_for_hotplugged_monitors();
+    listen_for_hotplugged_monitors_plug_unplug();
 }
 
 fn list_block_devices() {
@@ -151,6 +152,50 @@ fn listen_for_hotplugged_monitors() {
                     println!("{:?} - {:?}", property.name(), property.value());
                 }
                 println!();
+            }
+        }
+    }
+}
+
+fn listen_for_hotplugged_monitors_plug_unplug() {
+    let monitor = MonitorBuilder::new()
+        .unwrap()
+        .match_subsystem("drm")
+        .unwrap();
+    let socket = monitor.listen().unwrap();
+    let mut event_iter = socket.iter();
+
+    loop {
+        if let Some(event) = event_iter.next() {
+            let event_type = event.event_type();
+            if event_type == EventType::Change || event_type == EventType::Add {
+                if let Some(devpath) = event.syspath().to_str() {
+                    if let Some(name) = devpath.split("drm/").last() {
+                        let status_path = format!("/sys/class/drm/{}/status", name);
+                        println!("[1]status_path = {status_path}");
+                        let device = event.device();
+                        let status_path = PathBuf::from(device.syspath());
+                        println!("[2]status_path = {status_path:?}");
+
+                        let hotplug = event.property_value("HOTPLUG");
+                        println!("hotplug: {hotplug:?}");
+
+                        if let Ok(status) = std::fs::read_to_string(&status_path) {
+                            match status.trim() {
+                                "connected" => println!("{} plugged in", name),
+                                "disconnected" => println!("{} unplugged", name),
+                                "unknown" => println!("{} state unknown", name),
+                                _ => println!("match error"),
+                            }
+                        } else {
+                            println!("read error");
+                        }
+                    } else {
+                        println!("name error");
+                    }
+                } else {
+                    println!("Devpath error");
+                }
             }
         }
     }
