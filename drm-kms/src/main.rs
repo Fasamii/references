@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use std::{
     collections::HashMap,
     fmt::format,
@@ -5,9 +7,10 @@ use std::{
     os::fd::AsFd,
 };
 
-use drm::control::{Device, Event, connector};
+use drm::control::{Device, Event, Events, connector, property::EnumValue};
 use udev::EventType;
 
+#[derive(Debug)]
 // Wrapper for a device node
 struct Card(File);
 
@@ -34,22 +37,9 @@ impl Card {
 }
 
 fn main() {
-    let card = Card::open("/dev/dri/card1");
-    let mut known_states: HashMap<u32, connector::State> = HashMap::new();
-
-    let monitor = udev::MonitorBuilder::new().unwrap();
-    let monitor = monitor.match_subsystem("drm").unwrap();
-
-    let socket = monitor.listen().unwrap();
-    let mut event_iter = socket.iter();
-
+    let mut gpus = Gpus::new();
     loop {
-        if let Some(event) = event_iter.next() {
-            let event_type = event.event_type();
-            if event_type == EventType::Change || event_type == EventType::Add {
-                rescan_connectors(&card, &mut known_states);
-            }
-        }
+        gpus.pool();
     }
 }
 
@@ -93,6 +83,62 @@ fn rescan_connectors(card: &Card, cache: &mut HashMap<u32, connector::State>) {
             }
 
             _ => {}
+        }
+    }
+}
+
+struct Gpu {
+    devnode: String,
+    card: Card,
+    known_states: HashMap<u32, connector::State>,
+}
+
+struct Gpus {
+    gpus: Vec<Gpu>,
+    socket: udev::MonitorSocket,
+}
+
+impl Gpus {
+    fn new() -> Self {
+        let mut enumerator = udev::Enumerator::new().unwrap();
+        enumerator.match_subsystem("drm").unwrap();
+        let mut gpus: Vec<Gpu> = Vec::new();
+
+        for device in enumerator.scan_devices().unwrap() {
+            if let Some(devnode) = device.devnode() {
+                let path = devnode.to_string_lossy();
+                if !path.contains("card") {
+                    continue;
+                }
+
+                let card = Card::open(&path);
+                let mut gpu = Gpu {
+                    card,
+                    known_states: HashMap::new(),
+                    devnode: path.into_owned(),
+                };
+
+                rescan_connectors(&gpu.card, &mut gpu.known_states);
+                gpus.push(gpu);
+            }
+        }
+
+        let monitor = udev::MonitorBuilder::new().unwrap();
+        let monitor = monitor.match_subsystem("drm").unwrap();
+
+        let socket = monitor.listen().unwrap();
+
+        Self { gpus, socket }
+    }
+
+    fn pool(&mut self) {
+        for event in self.socket.iter() {
+            let event_type = event.event_type();
+            if event_type == EventType::Change || event_type == EventType::Add {
+                for gpu in &mut self.gpus {
+                    rescan_connectors(&gpu.card, &mut gpu.known_states);
+                }
+            }
         }
     }
 }
