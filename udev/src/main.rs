@@ -1,13 +1,14 @@
 use std::ffi::OsStr;
 
-use udev::{Event, MonitorBuilder};
+use udev::{Event, EventType, MonitorBuilder};
 
 fn main() {
     // list_block_devices();
     // monitor_usb();
     // udev_with_drm_kms();
     // monitor_usb_wait();
-    query_drm_output_devices();
+    // query_drm_output_devices();
+    listen_for_hotplugged_monitors();
 }
 
 fn list_block_devices() {
@@ -131,6 +132,26 @@ fn query_drm_output_devices() {
                 device.devnode(),
                 device.sysname().display(),
             );
+        }
+    }
+}
+
+fn listen_for_hotplugged_monitors() {
+    let monitor = udev::MonitorBuilder::new()
+        .unwrap()
+        .match_subsystem("drm")
+        .unwrap();
+    let socket = monitor.listen().unwrap();
+    let mut event_iter = socket.iter();
+    loop {
+        if let Some(event) = event_iter.next() {
+            let event_type = event.event_type();
+            if event_type == EventType::Add || event_type == EventType::Change {
+                for property in event.properties() {
+                    println!("{:?} - {:?}", property.name(), property.value());
+                }
+                println!();
+            }
         }
     }
 }
