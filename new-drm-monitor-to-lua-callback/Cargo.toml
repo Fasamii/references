@@ -1,0 +1,9 @@
+[package]
+name = "new-drm-monitor-to-lua-callback"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+drm = "0.14.1"
+mlua = { version = "0.11.5", features = ["luajit52"] }
+udev = "0.9.3"
