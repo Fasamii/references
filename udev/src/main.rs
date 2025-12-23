@@ -6,7 +6,8 @@ fn main() {
     // list_block_devices();
     // monitor_usb();
     // udev_with_drm_kms();
-    monitor_usb_wait();
+    // monitor_usb_wait();
+    query_drm_output_devices();
 }
 
 fn list_block_devices() {
@@ -112,4 +113,24 @@ fn monitor_usb_wait() {
         println!("Event: {:?}", event.event_type());
     }
     println!("[2] Done");
+}
+
+fn query_drm_output_devices() {
+    let mut enumerator = udev::Enumerator::new().unwrap();
+    enumerator.match_subsystem("drm").unwrap();
+    let list = enumerator.scan_devices().unwrap();
+    for device in list {
+        if device.property_value("ID_FOR_SEAT").is_some()
+            // Double check since enumerator already filters subsystems
+            && device.subsystem() == Some(OsStr::new("drm")) 
+            // Checks if device is monitor
+            && device.devtype() == Some(OsStr::new("drm_minor"))
+        {
+            println!(
+                "Output device node: {:?}, name {}",
+                device.devnode(),
+                device.sysname().display(),
+            );
+        }
+    }
 }
