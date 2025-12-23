@@ -1,11 +1,12 @@
 use std::ffi::OsStr;
 
-use udev::MonitorBuilder;
+use udev::{Event, MonitorBuilder};
 
 fn main() {
-    list_block_devices();
+    // list_block_devices();
     // monitor_usb();
-    udev_with_drm_kms();
+    // udev_with_drm_kms();
+    monitor_usb_wait();
 }
 
 fn list_block_devices() {
@@ -70,6 +71,7 @@ fn device_properties(device: udev::Device) {
 fn udev_with_drm_kms() {
     let mut enumerator = udev::Enumerator::new().unwrap();
     enumerator.match_subsystem("drm").unwrap();
+
     for device in enumerator.scan_devices().unwrap() {
         if let Some(devnode) = device.devnode() {
             println!("DRM Device: {}", devnode.display());
@@ -81,4 +83,33 @@ fn udev_with_drm_kms() {
             println!();
         }
     }
+}
+
+// NOTE: Based on that experiment socket accumulates its events and you can iterate over them any
+// time you want (Removing that event from socket when iterating over it).
+const SLEEP_TIME: f64 = 5.0;
+fn monitor_usb_wait() {
+    let monitor = udev::MonitorBuilder::new()
+        .unwrap()
+        .match_subsystem("usb")
+        .unwrap();
+    let socket = monitor.listen().unwrap();
+
+    println!("Sleep ({SLEEP_TIME}s)");
+    std::thread::sleep(std::time::Duration::from_secs_f64(SLEEP_TIME));
+
+    println!("[1] Start-ed listening");
+    for event in socket.iter() {
+        println!("Event: {:?}", event.event_type());
+    }
+    println!("[1] Done");
+
+    println!("Sleep ({SLEEP_TIME}s)");
+    std::thread::sleep(std::time::Duration::from_secs_f64(SLEEP_TIME));
+
+    println!("[2] Start-ed listening");
+    for event in socket.iter() {
+        println!("Event: {:?}", event.event_type());
+    }
+    println!("[2] Done");
 }
