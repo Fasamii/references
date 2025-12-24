@@ -1,32 +1,30 @@
-use drm::control::{Device, connector};
 use std::collections::HashMap;
+
+use drm::control::{Device, connector};
 
 fn main() {
     let mut output = OutputManager::new();
     loop {
-        let states = output.pool();
+        let states = output.get_changed_connector_states();
+
         if !states.is_empty() {
             println!("changed = {states:?}");
         }
     }
 }
 
-// Wrapper around card that drm lib can work with
 #[derive(Debug)]
 struct Card {
     file: std::fs::File,
-    known_states: HashMap<u32, drm::control::connector::State>,
+    known_states: HashMap<u32, connector::State>,
 }
 
-// Constraint for implementing other lib drm traits
 impl std::os::fd::AsFd for Card {
     fn as_fd(&self) -> std::os::unix::prelude::BorrowedFd<'_> {
         self.file.as_fd()
     }
 }
 
-// Implementing traits that allow for Device and ControlDevice behaviors e.g.: resource_handles()
-// method
 impl drm::Device for Card {}
 impl drm::control::Device for Card {}
 
@@ -41,26 +39,24 @@ impl Card {
         })
     }
 
-    fn list_changed_connection_states(&mut self) -> Vec<(u32, connector::State)> {
-        let mut states: Vec<(u32, connector::State)> = Vec::new();
-
+    fn get_all_changed_connector_states(&mut self) -> Vec<(u32, connector::State)> {
+        let mut changed_states: Vec<(u32, connector::State)> = Vec::new();
         let resources = self.resource_handles().unwrap();
 
         for &conn_handle in resources.connectors() {
             let connector = self.get_connector(conn_handle, false).unwrap();
-
             let state = connector.state();
-            let id: u32 = conn_handle.into();
 
-            let old = self.known_states.insert(id, state);
+            let key: u32 = conn_handle.into();
+            let old = self.known_states.insert(key, state);
+
             match (old, state) {
-                (None, state) => states.push((id, state)),
-                (Some(old_state), state) if old_state != state => states.push((id, state)),
-                _ => {}
+                (None, state) => changed_states.push((key, state)),
+                (Some(old_state), state) if old_state != state => changed_states.push((key, state)),
+                _ => (),
             }
         }
-
-        states
+        changed_states
     }
 }
 
@@ -80,19 +76,20 @@ impl Cards {
                     continue;
                 }
 
-                cards.push(Card::new(path).unwrap());
+                let card = Card::new(path).unwrap();
+                cards.push(card);
             }
         }
 
         Ok(Cards(cards))
     }
 
-    fn list_changed_connection_states(&mut self) -> Vec<(u32, connector::State)> {
-        let mut states: Vec<(u32, connector::State)> = Vec::new();
+    fn get_all_cards_changed_connector_states(&mut self) -> Vec<(u32, connector::State)> {
+        let mut changed_states: Vec<(u32, connector::State)> = Vec::new();
         for card in &mut self.0 {
-            states.append(&mut card.list_changed_connection_states());
+            changed_states.extend(card.get_all_changed_connector_states());
         }
-        states
+        changed_states
     }
 }
 
@@ -112,14 +109,14 @@ impl OutputManager {
         }
     }
 
-    fn pool(&mut self) -> Vec<(u32, connector::State)> {
-        let mut states: Vec<(u32, connector::State)> = Vec::new();
+    fn get_changed_connector_states(&mut self) -> Vec<(u32, connector::State)> {
+        let mut changed_states: Vec<(u32, connector::State)> = Vec::new();
         for event in self.socket.iter().take(10) {
             let event_type = event.event_type();
             if event_type == udev::EventType::Add || event_type == udev::EventType::Change {
-                states.append(&mut self.cards.list_changed_connection_states());
+                changed_states.extend(self.cards.get_all_cards_changed_connector_states());
             }
         }
-        states
+        changed_states
     }
 }
