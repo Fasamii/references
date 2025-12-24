@@ -1,22 +1,50 @@
-use std::collections::HashMap;
-
 use drm::control::{Device, connector};
+use std::io::Write;
+use std::{collections::HashMap, hash::Hash};
+
+const DEBOUNCE_MS: u64 = 100;
 
 fn main() {
-    let mut output = OutputManager::new();
+    let mut output = OutputManager::new().unwrap();
+    println!("initial states : {:?}", output.connectors);
     loop {
-        let states = output.get_changed_connector_states();
+        let states = output.update_connector_states().unwrap();
 
         if !states.is_empty() {
-            println!("changed = {states:?}");
+            println!("changed : {states:?}");
+            std::io::stdout().flush().unwrap();
         }
+    }
+}
+
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
+struct ConnectorKey {
+    card_hash: u64,
+    connector_id: u32,
+}
+
+use std::hash::Hasher;
+impl ConnectorKey {
+    fn new(card_path: &str, connector_id: u32) -> Self {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        card_path.hash(&mut hasher);
+        Self {
+            card_hash: hasher.finish(),
+            connector_id,
+        }
+    }
+}
+
+impl std::fmt::Debug for ConnectorKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ConnKey({})", self.connector_id)
     }
 }
 
 #[derive(Debug)]
 struct Card {
+    path: String,
     file: std::fs::File,
-    known_states: HashMap<u32, connector::State>,
 }
 
 impl std::os::fd::AsFd for Card {
@@ -34,29 +62,23 @@ impl Card {
         options.read(true);
         options.write(true);
         Ok(Self {
+            path: path.to_string(),
             file: options.open(path)?,
-            known_states: HashMap::new(),
         })
     }
 
-    fn get_all_changed_connector_states(&mut self) -> Vec<(u32, connector::State)> {
-        let mut changed_states: Vec<(u32, connector::State)> = Vec::new();
-        let resources = self.resource_handles().unwrap();
+    fn get_all_connector_states(
+        &mut self,
+    ) -> Result<Vec<(ConnectorKey, connector::State)>, Box<dyn std::error::Error>> {
+        let mut states: Vec<(ConnectorKey, connector::State)> = Vec::new();
+        let resources = self.resource_handles()?;
 
         for &conn_handle in resources.connectors() {
             let connector = self.get_connector(conn_handle, false).unwrap();
-            let state = connector.state();
-
-            let key: u32 = conn_handle.into();
-            let old = self.known_states.insert(key, state);
-
-            match (old, state) {
-                (None, state) => changed_states.push((key, state)),
-                (Some(old_state), state) if old_state != state => changed_states.push((key, state)),
-                _ => (),
-            }
+            let key = ConnectorKey::new(&self.path, conn_handle.into());
+            states.push((key, connector.state()));
         }
-        changed_states
+        Ok(states)
     }
 }
 
@@ -84,39 +106,132 @@ impl Cards {
         Ok(Cards(cards))
     }
 
-    fn get_all_cards_changed_connector_states(&mut self) -> Vec<(u32, connector::State)> {
-        let mut changed_states: Vec<(u32, connector::State)> = Vec::new();
+    fn get_all_cards_connector_states(
+        &mut self,
+    ) -> Result<Vec<(ConnectorKey, connector::State)>, Box<dyn std::error::Error>> {
+        let mut states: Vec<(ConnectorKey, connector::State)> = Vec::new();
         for card in &mut self.0 {
-            changed_states.extend(card.get_all_changed_connector_states());
+            states.extend(card.get_all_connector_states()?);
         }
-        changed_states
+        Ok(states)
+    }
+}
+
+#[allow(unused)]
+struct DebounceTrackder {
+    pending: HashMap<ConnectorKey, (connector::State, std::time::Instant)>,
+    stable: HashMap<ConnectorKey, connector::State>,
+}
+
+#[allow(unused)]
+impl DebounceTrackder {
+    fn new() -> Self {
+        Self {
+            pending: HashMap::new(),
+            stable: HashMap::new(),
+        }
+    }
+
+    fn update(
+        &mut self,
+        new: Vec<(ConnectorKey, connector::State)>,
+    ) -> Vec<(ConnectorKey, connector::State)> {
+        let now = std::time::Instant::now();
+        let debounce_duration = std::time::Duration::from_millis(DEBOUNCE_MS);
+
+        // TODO: keep registry of all known states and return all states for connectors that
+        // are not in registry as stable, thanks to that freshly connected monitor will instantly
+        // be verified as stable device and already connected that may appear as disconnected for
+        // less that debounce duration will be debounced.
+
+        // for (key, state) in current {
+        //     let stable_state = self.stable.get(&key);
+        //
+        //     if stable_state != Some(&state) {
+        //         self.pending.insert(key, (state, now));
+        //     } else {
+        //         self.pending.remove(&key);
+        //     }
+        // }
+        //
+        // let mut ready: Vec<(u32, connector::State)> = Vec::new();
+        // self.pending.retain(|key, (state, last_update)| {
+        //     if now.duration_since(*last_update) >= debounce_duration {
+        //         ready.push((*key, *state));
+        //         self.stable.insert(*key, *state);
+        //         false
+        //     } else {
+        //         true
+        //     }
+        // });
+        // ready
+        todo!()
     }
 }
 
 struct OutputManager {
     cards: Cards,
+    connectors: HashMap<ConnectorKey, connector::State>,
     socket: udev::MonitorSocket,
+    debouncer: DebounceTrackder,
 }
 
 impl OutputManager {
-    fn new() -> Self {
-        let monitor = udev::MonitorBuilder::new().unwrap();
-        let monitor = monitor.match_subsystem_devtype("drm", "drm_minor").unwrap();
-        let socket = monitor.listen().unwrap();
-        OutputManager {
-            cards: Cards::new().unwrap(),
+    fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        let mut cards = Cards::new().unwrap();
+
+        let connectors: HashMap<ConnectorKey, connector::State> = cards
+            .get_all_cards_connector_states()?
+            .into_iter()
+            .collect();
+
+        let debouncer = DebounceTrackder::new();
+
+        let monitor = udev::MonitorBuilder::new()?;
+        let monitor = monitor.match_subsystem_devtype("drm", "drm_minor")?;
+        let socket = monitor.listen()?;
+
+        Ok(OutputManager {
+            cards,
+            connectors,
             socket,
-        }
+            debouncer,
+        })
     }
 
-    fn get_changed_connector_states(&mut self) -> Vec<(u32, connector::State)> {
-        let mut changed_states: Vec<(u32, connector::State)> = Vec::new();
+    fn had_drm_event(&mut self) -> bool {
+        let mut had_event = false;
         for event in self.socket.iter().take(10) {
             let event_type = event.event_type();
             if event_type == udev::EventType::Add || event_type == udev::EventType::Change {
-                changed_states.extend(self.cards.get_all_cards_changed_connector_states());
+                had_event = true;
             }
         }
-        changed_states
+        had_event
+    }
+
+    fn update_connector_states(
+        &mut self,
+    ) -> Result<Vec<(ConnectorKey, connector::State)>, Box<dyn std::error::Error>> {
+        if self.had_drm_event() {
+            let mut changed_states: Vec<(ConnectorKey, connector::State)> = Vec::new();
+            let new_states = self.cards.get_all_cards_connector_states()?;
+
+            for (key, new_state) in &new_states {
+                let old_state = self.connectors.get(key);
+                match (old_state, new_state) {
+                    (None, new_state) => changed_states.push((*key, *new_state)),
+                    (Some(old_state), new_state) if old_state != new_state => {
+                        changed_states.push((*key, *new_state))
+                    }
+                    _ => (),
+                };
+            }
+            self.connectors = new_states.into_iter().collect();
+
+            Ok(changed_states)
+        } else {
+            Ok(Vec::with_capacity(0))
+        }
     }
 }
