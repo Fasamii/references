@@ -2,7 +2,7 @@ use drm::control::{Device, connector};
 use std::collections::HashMap;
 
 fn main() {
-    let mut output = OutputMangaer::new();
+    let mut output = OutputManager::new();
     loop {
         let states = output.pool();
         if !states.is_empty() {
@@ -11,18 +11,22 @@ fn main() {
     }
 }
 
+// Wrapper around card that drm lib can work with
 #[derive(Debug)]
 struct Card {
     file: std::fs::File,
     known_states: HashMap<u32, drm::control::connector::State>,
 }
 
+// Constraint for implementing other lib drm traits
 impl std::os::fd::AsFd for Card {
     fn as_fd(&self) -> std::os::unix::prelude::BorrowedFd<'_> {
         self.file.as_fd()
     }
 }
 
+// Implementing traits that allow for Device and ControlDevice behaviors e.g.: resource_handles()
+// method
 impl drm::Device for Card {}
 impl drm::control::Device for Card {}
 
@@ -92,17 +96,17 @@ impl Cards {
     }
 }
 
-struct OutputMangaer {
+struct OutputManager {
     cards: Cards,
     socket: udev::MonitorSocket,
 }
 
-impl OutputMangaer {
+impl OutputManager {
     fn new() -> Self {
         let monitor = udev::MonitorBuilder::new().unwrap();
         let monitor = monitor.match_subsystem_devtype("drm", "drm_minor").unwrap();
         let socket = monitor.listen().unwrap();
-        OutputMangaer {
+        OutputManager {
             cards: Cards::new().unwrap(),
             socket,
         }
