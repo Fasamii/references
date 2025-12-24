@@ -114,7 +114,7 @@ impl OutputManager {
 
     fn pool(&mut self) -> Vec<(u32, connector::State)> {
         let mut states: Vec<(u32, connector::State)> = Vec::new();
-        for event in self.socket.iter() {
+        for event in self.socket.iter().take(10) {
             let event_type = event.event_type();
             if event_type == udev::EventType::Add || event_type == udev::EventType::Change {
                 states.append(&mut self.cards.list_changed_connection_states());
