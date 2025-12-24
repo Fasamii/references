@@ -1,6 +1,5 @@
-use std::collections::HashMap;
-
 use drm::control::{Device, connector};
+use std::collections::HashMap;
 
 fn main() {
     let mut output = OutputMangaer::new();
@@ -86,7 +85,7 @@ impl Cards {
 
     fn list_changed_connection_states(&mut self) -> Vec<(u32, connector::State)> {
         let mut states: Vec<(u32, connector::State)> = Vec::new();
-        for mut card in &mut self.0 {
+        for card in &mut self.0 {
             states.append(&mut card.list_changed_connection_states());
         }
         states
