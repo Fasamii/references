@@ -1,5 +1,4 @@
 use drm::control::{Device, connector};
-use mlua::Chunk;
 use std::{collections::HashMap, hash::Hash};
 
 const CONFIG_PATH: &str = "config.lua";
@@ -178,6 +177,11 @@ struct Config {
 impl Config {
     fn new(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let lua = mlua::Lua::new();
+        let log = lua.create_function(|_, msg: String| {
+            println!("{msg}");
+            Ok(())
+        })?;
+        lua.globals().set("log", log)?;
         let source = std::fs::read(path)?;
 
         lua.load(source).exec()?;

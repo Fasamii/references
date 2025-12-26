@@ -5,5 +5,9 @@ edition = "2024"
 
 [dependencies]
 drm = "0.14.1"
-mlua = { version = "0.11.5", features = ["luajit52"] }
+mlua = { version = "0.11.5", features = ["luajit52"], default-features = false } # vendored packs lua with rust executable (No external dependency required & bigger binary)
 udev = "0.9.3"
+
+[features]
+default = []
+no_deps = ["mlua/vendored"] # setting no_deps for that program will pass vendored feature to mlua crate

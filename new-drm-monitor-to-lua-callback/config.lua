@@ -9,6 +9,7 @@ Config = {
 		if not state then
 			state_str = "Disconnected";
 		end
+		log("hi :3");
 		print("\t\tskibidi from Config in lua - with state: " .. state_str);
 	end
 }
