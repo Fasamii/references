@@ -187,8 +187,8 @@ impl<'a> Config<'a> {
         Ok(Self { lua, config })
     }
 
-    fn read_config_file(path: &str) -> Result<String, std::io::Error> {
-        std::fs::read_to_string(path)
+    fn read_config_file(path: &str) -> Result<Vec<u8>, std::io::Error> {
+        std::fs::read(path)
     }
 }
 
