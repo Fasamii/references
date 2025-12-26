@@ -1,17 +1,15 @@
 use drm::control::{Device, connector};
-use std::io::Write;
+use mlua::Chunk;
 use std::{collections::HashMap, hash::Hash};
 
-fn main() {
-    let mut output = OutputManager::new().unwrap();
-    println!("initial states : {:?}", output.connectors);
-    loop {
-        let states = output.update_connector_states().unwrap();
+const CONFIG_PATH: &str = "config.lua";
 
-        if !states.is_empty() {
-            println!("changed : {states:?}");
-            std::io::stdout().flush().unwrap();
-        }
+fn main() {
+    let mut core = Core::new(CONFIG_PATH).unwrap();
+    println!("Inital State : {:?}", core.output.connectors);
+    loop {
+        core.dispatch().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
     }
 }
 
@@ -174,5 +172,45 @@ impl OutputManager {
         } else {
             Ok(Vec::with_capacity(0))
         }
+    }
+}
+
+struct Config<'a> {
+    lua: mlua::Lua,
+    config: Chunk<'a>,
+}
+
+impl<'a> Config<'a> {
+    fn new(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let lua = mlua::Lua::new();
+        let config = lua.load(Self::read_config_file(path)?);
+        Ok(Self { lua, config })
+    }
+
+    fn read_config_file(path: &str) -> Result<String, std::io::Error> {
+        std::fs::read_to_string(path)
+    }
+}
+
+struct Core<'a> {
+    output: OutputManager,
+    config: Config<'a>,
+}
+
+impl<'a> Core<'a> {
+    fn new(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self {
+            output: OutputManager::new()?,
+            config: Config::new(path)?,
+        })
+    }
+
+    fn dispatch(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let changed_states = self.output.update_connector_states()?;
+        changed_states
+            .iter()
+            .for_each(|state| println!("Changed_state: {state:?}"));
+
+        Ok(())
     }
 }
