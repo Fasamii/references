@@ -1,9 +1,6 @@
 use drm::control::{Device, connector};
 use std::io::Write;
-use std::time;
 use std::{collections::HashMap, hash::Hash};
-
-const DEBOUNCE_MS: u64 = 300;
 
 fn main() {
     let mut output = OutputManager::new().unwrap();
@@ -76,6 +73,7 @@ impl Card {
 
         for &conn_handle in resources.connectors() {
             let connector = self.get_connector(conn_handle, false).unwrap();
+            println!("conn = {}", connector);
             let key = ConnectorKey::new(&self.path, conn_handle.into());
             states.push((key, connector.state()));
         }
@@ -121,7 +119,6 @@ impl Cards {
 struct OutputManager {
     cards: Cards,
     connectors: HashMap<ConnectorKey, connector::State>,
-    pending_connectors: HashMap<ConnectorKey, (connector::State, time::Instant)>,
     socket: udev::MonitorSocket,
 }
 
@@ -142,7 +139,6 @@ impl OutputManager {
             cards,
             connectors,
             socket,
-            pending_connectors: HashMap::new(),
         })
     }
 
@@ -157,45 +153,12 @@ impl OutputManager {
         had_event
     }
 
-    // FIXME: If you disconnect and connect device again while still in pending state the returned
-    // changes will be disconnected anyway
-    fn debounce(
-        &mut self,
-        new_connectors: &Vec<(ConnectorKey, connector::State)>,
-    ) -> Vec<(ConnectorKey, connector::State)> {
-        let now = time::Instant::now();
-        let debounce_duration = time::Duration::from_millis(DEBOUNCE_MS);
-        let mut stable_states = Vec::new();
-        for (key, new_state) in new_connectors {
-            match (self.connectors.get(key), new_state) {
-                (None, connector::State::Connected) | (Some(_), connector::State::Connected) => {
-                    stable_states.push((*key, *new_state));
-                }
-                (_, new_state) => {
-                    self.pending_connectors.insert(*key, (*new_state, now));
-                }
-            }
-        }
-
-        self.pending_connectors.retain(|key, (state, last_update)| {
-            if now.duration_since(*last_update) >= debounce_duration {
-                stable_states.push((*key, *state));
-                false
-            } else {
-                true
-            }
-        });
-
-        stable_states
-    }
-
     fn update_connector_states(
         &mut self,
     ) -> Result<Vec<(ConnectorKey, connector::State)>, Box<dyn std::error::Error>> {
         let mut changed_states: Vec<(ConnectorKey, connector::State)> = Vec::new();
         if self.had_drm_event() {
             let all_states = self.cards.get_all_cards_connector_states()?;
-
             for (key, current_state) in &all_states {
                 let old_state = self.connectors.get(key);
                 match (old_state, current_state) {
@@ -206,24 +169,10 @@ impl OutputManager {
                     _ => (),
                 };
             }
-
-            println!("\t\tall_states = {all_states:?}");
-            println!("\t\tchanged_states = {changed_states:?}");
-            let stable_states = self.debounce(&changed_states);
-            println!("\t\tstable_states= {stable_states:?}");
-            std::io::stdout().flush().unwrap();
-
-            for (key, state) in &stable_states {
-                self.connectors.insert(*key, *state);
-            }
-
-            Ok(stable_states)
+            self.connectors = all_states.into_iter().collect();
+            Ok(changed_states)
         } else {
-            let stable_states = self.debounce(&Vec::with_capacity(0));
-            for (key, state) in &stable_states {
-                self.connectors.insert(*key, *state);
-            }
-            Ok(stable_states)
+            Ok(Vec::with_capacity(0))
         }
     }
 }
