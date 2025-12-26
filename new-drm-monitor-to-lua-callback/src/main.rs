@@ -6,9 +6,9 @@ const CONFIG_PATH: &str = "config.lua";
 
 fn main() {
     let mut core = Core::new(CONFIG_PATH).unwrap();
-    println!("Inital State : {:?}", core.output.connectors);
+    core.dispatch(true).unwrap();
     loop {
-        core.dispatch().unwrap();
+        core.dispatch(false).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
 }
@@ -71,7 +71,6 @@ impl Card {
 
         for &conn_handle in resources.connectors() {
             let connector = self.get_connector(conn_handle, false).unwrap();
-            println!("conn = {}", connector);
             let key = ConnectorKey::new(&self.path, conn_handle.into());
             states.push((key, connector.state()));
         }
@@ -122,12 +121,7 @@ struct OutputManager {
 
 impl OutputManager {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let mut cards = Cards::new().unwrap();
-
-        let connectors: HashMap<ConnectorKey, connector::State> = cards
-            .get_all_cards_connector_states()?
-            .into_iter()
-            .collect();
+        let cards = Cards::new().unwrap();
 
         let monitor = udev::MonitorBuilder::new()?;
         let monitor = monitor.match_subsystem_devtype("drm", "drm_minor")?;
@@ -135,7 +129,7 @@ impl OutputManager {
 
         Ok(OutputManager {
             cards,
-            connectors,
+            connectors: HashMap::new(),
             socket,
         })
     }
@@ -153,9 +147,10 @@ impl OutputManager {
 
     fn update_connector_states(
         &mut self,
+        ignore_drm_event: bool,
     ) -> Result<Vec<(ConnectorKey, connector::State)>, Box<dyn std::error::Error>> {
         let mut changed_states: Vec<(ConnectorKey, connector::State)> = Vec::new();
-        if self.had_drm_event() {
+        if self.had_drm_event() || ignore_drm_event {
             let all_states = self.cards.get_all_cards_connector_states()?;
             for (key, current_state) in &all_states {
                 let old_state = self.connectors.get(key);
@@ -177,27 +172,29 @@ impl OutputManager {
 
 struct Config {
     lua: mlua::Lua,
-    path: String,
+    table: mlua::Table,
 }
 
 impl Config {
     fn new(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let lua = mlua::Lua::new();
-        let table = lua.create_table()?;
-        table.set("new_output", mlua::Nil)?;
-        lua.globals().set("config", table)?;
-        let rust_add =
-            lua.create_function(|_, (a, b): (u32, u32)| Ok::<u32, mlua::Error>(a + b))?;
-        lua.globals().set("add", rust_add)?;
+        let source = std::fs::read(path)?;
 
-        Ok(Self {
-            lua,
-            path: String::from(path),
-        })
+        lua.load(source).exec()?;
+        let table: mlua::Table = lua.globals().get("Config")?;
+
+        Ok(Self { lua, table })
     }
 
-    fn read_config_file(&self) -> Result<Vec<u8>, std::io::Error> {
-        std::fs::read(&self.path)
+    fn on_new_output(&self, state: &connector::State) -> mlua::Result<()> {
+        if let Ok(func) = self.table.get::<mlua::Function>("on_new_output") {
+            match state {
+                connector::State::Connected => func.call::<bool>(true)?,
+                connector::State::Disconnected => func.call::<bool>(false)?,
+                connector::State::Unknown => todo!("Handle exeption"),
+            };
+        }
+        Ok(())
     }
 }
 
@@ -214,14 +211,13 @@ impl Core {
         })
     }
 
-    fn dispatch(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let changed_states = self.output.update_connector_states()?;
-        changed_states
-            .iter()
-            .for_each(|state| println!("Changed_state: {state:?}"));
-
-        let config = self.config.lua.load(self.config.read_config_file()?);
-        config.eval::<()>()?;
+    fn dispatch(&mut self, ignore_drm_event: bool) -> Result<(), Box<dyn std::error::Error>> {
+        let changed_states = self.output.update_connector_states(ignore_drm_event)?;
+        changed_states.iter().for_each(|state| {
+            if state.1 == connector::State::Connected {
+                self.config.on_new_output(&state.1).unwrap()
+            }
+        });
 
         Ok(())
     }
