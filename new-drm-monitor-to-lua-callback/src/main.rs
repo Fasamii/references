@@ -175,29 +175,38 @@ impl OutputManager {
     }
 }
 
-struct Config<'a> {
+struct Config {
     lua: mlua::Lua,
-    config: Chunk<'a>,
+    path: String,
 }
 
-impl<'a> Config<'a> {
+impl Config {
     fn new(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let lua = mlua::Lua::new();
-        let config = lua.load(Self::read_config_file(path)?);
-        Ok(Self { lua, config })
+        let table = lua.create_table()?;
+        table.set("new_output", mlua::Nil)?;
+        lua.globals().set("config", table)?;
+        let rust_add =
+            lua.create_function(|_, (a, b): (u32, u32)| Ok::<u32, mlua::Error>(a + b))?;
+        lua.globals().set("add", rust_add)?;
+
+        Ok(Self {
+            lua,
+            path: String::from(path),
+        })
     }
 
-    fn read_config_file(path: &str) -> Result<Vec<u8>, std::io::Error> {
-        std::fs::read(path)
+    fn read_config_file(&self) -> Result<Vec<u8>, std::io::Error> {
+        std::fs::read(&self.path)
     }
 }
 
-struct Core<'a> {
+struct Core {
     output: OutputManager,
-    config: Config<'a>,
+    config: Config,
 }
 
-impl<'a> Core<'a> {
+impl Core {
     fn new(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
             output: OutputManager::new()?,
@@ -210,6 +219,9 @@ impl<'a> Core<'a> {
         changed_states
             .iter()
             .for_each(|state| println!("Changed_state: {state:?}"));
+
+        let config = self.config.lua.load(self.config.read_config_file()?);
+        config.eval::<()>()?;
 
         Ok(())
     }
